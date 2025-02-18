@@ -55,6 +55,7 @@
                 </div>
 
                 <button v-if="isEditMode && !isAdd" class="btn btn-normal" :disabled="processing" @click="discardStack">{{ $t("discardStack") }}</button>
+
                 <button v-if="!isEditMode" class="btn btn-danger" :disabled="processing" @click="showDeleteDialog = !showDeleteDialog">
                     <font-awesome-icon icon="trash" class="me-1" />
                     {{ $t("deleteStack") }}
@@ -99,7 +100,7 @@
                                 <label for="name" class="form-label">{{ $t("dockgeAgent") }}</label>
                                 <select v-model="stack.endpoint" class="form-select">
                                     <option v-for="(agent, endpoint) in $root.agentList" :key="endpoint" :value="endpoint" :disabled="$root.agentStatusList[endpoint] != 'online'">
-                                        ({{ $root.agentStatusList[endpoint] }}) {{ (endpoint) ? endpoint : $t("currentEndpoint") }}
+                                        ({{ $root.agentStatusList[endpoint] }}) {{ (agent.name !== '') ? agent.name : agent.url || $t("Controller") }}
                                     </option>
                                 </select>
                             </div>
@@ -128,7 +129,8 @@
                             :name="name"
                             :is-edit-mode="isEditMode"
                             :first="name === Object.keys(jsonConfig.services)[0]"
-                            :status="serviceStatusList[name]"
+                            :serviceStatus="serviceStatusList[name]"
+                            :dockerStats="dockerStats"
                         />
                     </div>
 
@@ -231,6 +233,10 @@
             <!-- Delete Dialog -->
             <BModal v-model="showDeleteDialog" :okTitle="$t('deleteStack')" okVariant="danger" @ok="deleteDialog">
                 {{ $t("deleteStackMsg") }}
+                <div class="form-check mt-4">
+                    <label><input v-model="deleteStackFiles" class="form-check-input" type="checkbox" />{{
+                        $t("deleteStackFilesConfirmation") }}</label>
+                </div>
             </BModal>
         </div>
     </transition>
@@ -271,6 +277,7 @@ const envDefault = "# VARIABLE=value #comment";
 let yamlErrorTimeout = null;
 
 let serviceStatusTimeout = null;
+let dockerStatsTimeout = null;
 let prismjsSymbolDefinition = {
     "symbol": {
         pattern: /(?<!\$)\$(\{[^{}]*\}|\w+)/,
@@ -306,11 +313,14 @@ export default {
 
             },
             serviceStatusList: {},
+            dockerStats: {},
             isEditMode: false,
             submitted: false,
             showDeleteDialog: false,
+            deleteStackFiles: false,
             newContainerName: "",
             stopServiceStatusTimeout: false,
+            stopDockerStatsTimeout: false,
         };
     },
     computed: {
@@ -478,6 +488,7 @@ export default {
         }
 
         this.requestServiceStatus();
+        this.requestDockerStats();
     },
     unmounted() {
 
@@ -490,6 +501,13 @@ export default {
             }, 5000);
         },
 
+        startDockerStatsTimeout() {
+            clearTimeout(dockerStatsTimeout);
+            dockerStatsTimeout = setTimeout(async () => {
+                this.requestDockerStats();
+            }, 5000);
+        },
+
         requestServiceStatus() {
             this.$root.emitAgent(this.endpoint, "serviceStatusList", this.stack.name, (res) => {
                 if (res.ok) {
@@ -497,6 +515,17 @@ export default {
                 }
                 if (!this.stopServiceStatusTimeout) {
                     this.startServiceStatusTimeout();
+                }
+            });
+        },
+
+        requestDockerStats() {
+            this.$root.emitAgent(this.endpoint, "dockerStats", (res) => {
+                if (res.ok) {
+                    this.dockerStats = res.dockerStats;
+                }
+                if (!this.stopDockerStatsTimeout) {
+                    this.startDockerStatsTimeout();
                 }
             });
         },
@@ -518,7 +547,9 @@ export default {
         exitAction() {
             console.log("exitAction");
             this.stopServiceStatusTimeout = true;
+            this.stopDockerStatsTimeout = true;
             clearTimeout(serviceStatusTimeout);
+            clearTimeout(dockerStatsTimeout);
 
             // Leave Combined Terminal
             console.debug("leaveCombinedTerminal", this.endpoint, this.stack.name);
@@ -646,7 +677,7 @@ export default {
         },
 
         deleteDialog() {
-            this.$root.emitAgent(this.endpoint, "deleteStack", this.stack.name, (res) => {
+            this.$root.emitAgent(this.endpoint, "deleteStack", this.stack.name, { deleteStackFiles: this.deleteStackFiles }, (res) => {
                 this.$root.toastRes(res);
                 if (res.ok) {
                     this.$router.push("/");
@@ -786,6 +817,44 @@ export default {
             this.stack.name = this.stack?.name?.toLowerCase();
         },
 
+        startService(serviceName) {
+            this.processing = true;
+
+            this.$root.emitAgent(this.endpoint, "startService", this.stack.name, serviceName, (res) => {
+                this.processing = false;
+                this.$root.toastRes(res);
+
+                if (res.ok) {
+                    this.requestServiceStatus(); // Refresh service status
+                }
+            });
+        },
+
+        stopService(serviceName) {
+            this.processing = true;
+
+            this.$root.emitAgent(this.endpoint, "stopService", this.stack.name, serviceName, (res) => {
+                this.processing = false;
+                this.$root.toastRes(res);
+
+                if (res.ok) {
+                    this.requestServiceStatus(); // Refresh service status
+                }
+            });
+        },
+
+        restartService(serviceName) {
+            this.processing = true;
+
+            this.$root.emitAgent(this.endpoint, "restartService", this.stack.name, serviceName, (res) => {
+                this.processing = false;
+                this.$root.toastRes(res);
+
+                if (res.ok) {
+                    this.requestServiceStatus(); // Refresh service status
+                }
+            });
+        },
     }
 };
 </script>
@@ -800,9 +869,6 @@ export default {
 .editor-box {
     font-family: 'JetBrains Mono', monospace;
     font-size: 14px;
-    &.edit-mode {
-        background-color: #2c2f38 !important;
-    }
 }
 
 .agent-name {

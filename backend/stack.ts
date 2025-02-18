@@ -20,6 +20,10 @@ import { InteractiveTerminal, Terminal } from "./terminal";
 import childProcessAsync from "promisify-child-process";
 import { Settings } from "./settings";
 
+export interface DeleteOptions {
+    deleteStackFiles: boolean
+}
+
 export class Stack {
 
     name: string;
@@ -195,14 +199,12 @@ export class Stack {
         }
 
         // Write or overwrite the compose.yaml
-        await fsAsync.writeFile(path.join(dir, this._composeFileName), this.composeYAML);
-
-        const envPath = path.join(dir, ".env");
-
-        // Write or overwrite the .env
-        // If .env is not existing and the composeENV is empty, we don't need to write it
-        if (await fileExists(envPath) || this.composeENV.trim() !== "") {
-            await fsAsync.writeFile(envPath, this.composeENV);
+        fs.writeFileSync(path.join(dir, this._composeFileName), this.composeYAML);
+        if (process.env.PUID && process.env.PGID) {
+            const uid = Number(process.env.PUID);
+            const gid = Number(process.env.PGID);
+            fs.lchownSync(dir, uid, gid);
+            fs.chownSync(path.join(dir, this._composeFileName), uid, gid);
         }
     }
 
@@ -215,18 +217,20 @@ export class Stack {
         return exitCode;
     }
 
-    async delete(socket: DockgeSocket) : Promise<number> {
+    async delete(socket: DockgeSocket, options: DeleteOptions) : Promise<number> {
         const terminalName = getComposeTerminalName(socket.endpoint, this.name);
         let exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", [ "compose", "down", "--remove-orphans" ], this.path);
         if (exitCode !== 0) {
             throw new Error("Failed to delete, please check the terminal output for more information.");
         }
 
-        // Remove the stack folder
-        await fsAsync.rm(this.path, {
-            recursive: true,
-            force: true
-        });
+        if (options.deleteStackFiles) {
+            // Remove the stack folder
+            await fsAsync.rm(this.path, {
+                recursive: true,
+                force: true
+            });
+        }
 
         return exitCode;
     }
@@ -445,7 +449,7 @@ export class Stack {
 
     async update(socket: DockgeSocket) {
         const terminalName = getComposeTerminalName(socket.endpoint, this.name);
-        let exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", [ "compose", "pull" ], this.path);
+        let exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", [ "compose", "pull", "--policy", "missing" ], this.path);
         if (exitCode !== 0) {
             throw new Error("Failed to pull, please check the terminal output for more information.");
         }
@@ -497,7 +501,7 @@ export class Stack {
     }
 
     async getServiceStatusList() {
-        let statusList = new Map<string, number>();
+        let statusList = new Map<string, Array<object>>();
 
         try {
             let res = await childProcessAsync.spawn("docker", [ "compose", "ps", "--format", "json" ], {
@@ -511,13 +515,23 @@ export class Stack {
 
             let lines = res.stdout?.toString().split("\n");
 
+            const addLine = (obj: { Service: string, State: string, Name: string, Health: string }) => {
+                if (!statusList.has(obj.Service)) {
+                    statusList.set(obj.Service, []);
+                }
+                statusList.get(obj.Service)?.push({
+                    status: obj.Health || obj.State,
+                    name: obj.Name
+                });
+            };
+
             for (let line of lines) {
                 try {
                     let obj = JSON.parse(line);
-                    if (obj.Health === "") {
-                        statusList.set(obj.Service, obj.State);
+                    if (obj instanceof Array) {
+                        obj.forEach(addLine);
                     } else {
-                        statusList.set(obj.Service, obj.Health);
+                        addLine(obj);
                     }
                 } catch (e) {
                 }
@@ -528,6 +542,35 @@ export class Stack {
             log.error("getServiceStatusList", e);
             return statusList;
         }
+    }
 
+    async startService(socket: DockgeSocket, serviceName: string) {
+        const terminalName = getComposeTerminalName(socket.endpoint, this.name);
+        const exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", ["compose", "up", "-d", serviceName], this.path);
+        if (exitCode !== 0) {
+            throw new Error(`Failed to start service ${serviceName}, please check logs for more information.`);
+        }
+
+        return exitCode;
+    }
+
+    async stopService(socket: DockgeSocket, serviceName: string): Promise<number> {
+        const terminalName = getComposeTerminalName(socket.endpoint, this.name);
+        const exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", ["compose", "stop", serviceName], this.path);
+        if (exitCode !== 0) {
+            throw new Error(`Failed to stop service ${serviceName}, please check logs for more information.`);
+        }
+
+        return exitCode;
+    }
+
+    async restartService(socket: DockgeSocket, serviceName: string): Promise<number> {
+        const terminalName = getComposeTerminalName(socket.endpoint, this.name);
+        const exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", ["compose", "restart", serviceName], this.path);
+        if (exitCode !== 0) {
+            throw new Error(`Failed to restart service ${serviceName}, please check logs for more information.`);
+        }
+
+        return exitCode;
     }
 }

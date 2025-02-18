@@ -1,7 +1,7 @@
 <template>
     <div class="shadow-box big-padding mb-3 container">
         <div class="row">
-            <div class="col-7">
+            <div class="col-5">
                 <h4>{{ name }}</h4>
                 <div class="image mb-2">
                     <span class="me-1">{{ imageName }}:</span><span class="tag">{{ imageTag }}</span>
@@ -14,12 +14,33 @@
                     </a>
                 </div>
             </div>
-            <div class="col-5">
+            <div class="col-7">
                 <div class="function">
                     <router-link v-if="!isEditMode" class="btn btn-normal" :to="terminalRouteLink" disabled="">
                         <font-awesome-icon icon="terminal" />
                         Bash
                     </router-link>
+                    <button v-if="status !== 'running' && status !== 'healthy'"
+                            class="btn btn-primary me-2"
+                            :disabled="processing"
+                            @click="startService">
+                        <font-awesome-icon icon="play" class="me-1" />
+                        Start
+                    </button>
+                    <button v-if="status === 'running' || status === 'healthy' || status === 'unhealthy'"
+                            class="btn btn-danger me-2"
+                            :disabled="processing"
+                            @click="stopService">
+                        <font-awesome-icon icon="stop" class="me-1" />
+                        Stop
+                    </button>
+                    <button v-if="status === 'running' || status === 'healthy' || status === 'unhealthy'"
+                            class="btn btn-warning me-2"
+                            :disabled="processing"
+                            @click="restartService">
+                        <font-awesome-icon icon="sync" class="me-1" />
+                        Restart
+                    </button>
                 </div>
             </div>
         </div>
@@ -34,6 +55,32 @@
                 <font-awesome-icon icon="trash" />
                 {{ $t("deleteContainer") }}
             </button>
+        </div>
+        <div v-else-if="statsInstances.length > 0" class="mt-2">
+            <div class="d-flex align-items-center gap-3">
+                <template v-if="!expandedStats">
+                    <div class="stats">
+                        {{ $t('CPU') }}: {{ statsInstances[0].CPUPerc }}
+                    </div>
+                    <div class="stats">
+                        {{ $t('memoryAbbreviated') }}: {{ statsInstances[0].MemUsage }}
+                    </div>
+                </template>
+                <div class="d-flex flex-grow-1 justify-content-end">
+                    <button class="btn btn-sm btn-normal" @click="expandedStats = !expandedStats">
+                        <font-awesome-icon :icon="expandedStats ? 'chevron-up' : 'chevron-down'" />
+                    </button>
+                </div>
+            </div>
+            <transition name="slide-fade" appear>
+                <div v-if="expandedStats" class="d-flex flex-column gap-3 mt-2">
+                    <DockerStat
+                        v-for="stat in statsInstances"
+                        :key="stat.Name"
+                        :stat="stat"
+                    />
+                </div>
+            </transition>
         </div>
 
         <transition name="slide-fade" appear>
@@ -138,10 +185,12 @@
 import { defineComponent } from "vue";
 import { FontAwesomeIcon } from "@fortawesome/vue-fontawesome";
 import { parseDockerPort } from "../../../common/util-common";
+import DockerStat from "./DockerStat.vue";
 
 export default defineComponent({
     components: {
         FontAwesomeIcon,
+        DockerStat
     },
     props: {
         name: {
@@ -156,9 +205,13 @@ export default defineComponent({
             type: Boolean,
             default: false,
         },
-        status: {
-            type: String,
-            default: "N/A",
+        serviceStatus: {
+            type: Object,
+            default: null,
+        },
+        dockerStats: {
+            type: Object,
+            default: null
         }
     },
     emits: [
@@ -166,6 +219,7 @@ export default defineComponent({
     data() {
         return {
             showConfig: false,
+            expandedStats: false,
         };
     },
     computed: {
@@ -266,6 +320,22 @@ export default defineComponent({
                 return "";
             }
         },
+        statsInstances() {
+            if (!this.serviceStatus) {
+                return [];
+            }
+
+            return this.serviceStatus
+                .map(s => this.dockerStats[s.name])
+                .filter(s => !!s)
+                .sort((a, b) => a.Name.localeCompare(b.Name));
+        },
+        status() {
+            if (!this.serviceStatus) {
+                return "N/A";
+            }
+            return this.serviceStatus[0].status;
+        }
     },
     mounted() {
         if (this.first) {
@@ -284,6 +354,16 @@ export default defineComponent({
         remove() {
             delete this.jsonObject.services[this.name];
         },
+        startService() {
+            this.$emit("start-service", this.name);
+        },
+        stopService() {
+            this.$emit("stop-service", this.name);
+        },
+        restartService() {
+            this.$emit("restart-service", this.name);
+        }
+
     }
 });
 </script>
@@ -307,6 +387,11 @@ export default defineComponent({
         width: 100%;
         align-items: center;
         justify-content: end;
+    }
+
+    .stats {
+        font-size: 0.8rem;
+        color: #6c757d;
     }
 }
 </style>
